@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <title>データベースのロックの基礎からデッドロックまで</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="themes/packages/mytheme/theme_common.css">
+  </head>
+  <body>
+    <p>データベースのロックについて、資料を読んだり実際に試してみたので、学んだことを整理してみようと思います。はじめにロックについての基本的な知識を整理して、最終的にはデッドロックとその対策について説明します。</p>
+    <section class="level1" aria-labelledby="使用したソフトウェアのバージョン">
+      <h1 id="使用したソフトウェアのバージョン">使用したソフトウェアのバージョン</h1>
+      <ul>
+        <li>MySQL 8.0.31</li>
+      </ul>
+    </section>
+    <section class="level1" aria-labelledby="ロックとは何か概要">
+      <h1 id="ロックとは何か概要">ロックとは何か（概要）</h1>
+      <p>ロックはデータの更新を正しく行うための仕組みの一つで、あるデータに対する更新処理を制御するためのものです。ここで、データを正しく更新するとはどういうことかを説明するために、口座への振込を例に考えてみます。</p>
+      <p>例えば、口座Aから口座Bに1万円の振込を行うとします。このとき、口座Aの出金処理と口座Bの入金処理は、必ず両方が成功しなければなりません。このための仕組みが、みなさんご存じの通りトランザクションです。</p>
+      <figure>
+        <img src="https://i.gyazo.com/2ff22fe194bbfa0c4ec925dcf70026f9.png" alt="トランザクションによる更新">
+        <figcaption aria-hidden="true">トランザクションによる更新</figcaption>
+      </figure>
+      <p>また、口座Aから口座Bに振り込むのと同じタイミングに、口座Cから口座Bに1万円振り込むとします。このとき、参照と更新が次のような順序で行われると、Bが2万円増えるべきところが1万円しか増えないことが起こってしまいます。</p>
+      <figure>
+        <img src="https://i.gyazo.com/caba32292d7ffdf8c372ac6be89c30a8.png" alt="正しく更新できていない">
+        <figcaption aria-hidden="true">正しく更新できていない</figcaption>
+      </figure>
+      <p>このような同時更新による問題を防ぐための仕組みがロックです。</p>
+    </section>
+    <section class="level1" aria-labelledby="ロックとは何か詳細">
+      <h1 id="ロックとは何か詳細">ロックとは何か（詳細）</h1>
+      <p>ロックとは「あるデータに対する更新処理を制御するための仕組み」でした。データに対する更新処理を制御するというのは、同時に行われると問題が起きる処理を順番に実行するということです。そうするためには、あるデータを変更できるトランザクションを1つまでに制限します。</p>
+      <section class="level2" aria-labelledby="2種類のロック">
+        <h2 id="2種類のロック">2種類のロック</h2>
+        <p>ロックには排他ロックと共有ロックの2種類があります。先述の「変更できるトランザクションを1つまでに制限する機能」は、排他ロックのことです。排他ロックは、「これからこのデータを変更するので、他のトランザクションは変更しないでね」ということを表します。</p>
+        <p>共有ロックは、トランザクション内で読み取りを行なっていることを示すためのロックです。つまり、「今このデータを読み取っているので、他のトランザクションは変更しないでね」ということを表します。</p>
+        <p>排他ロックと共有ロックは、ロックをかけられたデータが他のトランザクションから変更できないという点は同じです。異なる点は、排他ロックがデータを変更することが目的なのに対し、共有ロックはそうではない点です。</p>
+        <p>排他ロックと共有ロックの共通点や違いをまとめてみると、次のようになります（トランザクションをTXと略しています）。</p>
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>他のTXから読み取れる</th>
+              <th>他のTXから変更できる</th>
+              <th>自分のTXから変更できる</th>
+              <th>他のTXから排他ロックを取得できる</th>
+              <th>他のTXから共有ロックを取得できる</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>排他ロック</td>
+              <td>o</td>
+              <td>x</td>
+              <td>o</td>
+              <td>x</td>
+              <td>x</td>
+            </tr>
+            <tr>
+              <td>共有ロック</td>
+              <td>o</td>
+              <td>x</td>
+              <td>△</td>
+              <td>x</td>
+              <td>o</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>排他ロックはデータを順番に更新するための仕組みなので、複数のトランザクションが取得することはできません。一方で、共有ロックは複数のトランザクションが取得できます。</p>
+      </section>
+      <section class="level2" aria-labelledby="ロックの取得するにはどうすればよいか">
+        <h2 id="ロックの取得するにはどうすればよいか">ロックの取得するにはどうすればよいか</h2>
+        <p>ロックを取得する代表的な方法には、次の2つがあります。</p>
+        <ul>
+          <li>トランザクション内でロック読み取りする（<code>SELECT ... FOR UPDATE</code>、<code>SELECT ... FOR SHARE</code>）</li>
+          <li><code>UPDATE</code>や<code>DELETE</code>を実行する</li>
+        </ul>
+        <p>これらの方法では、検索条件に主キーなどの一意なインデックスを使った場合は、該当するレコードにロックがかけられます。</p>
+        <p>
+          :::message
+          範囲検索を使った場合や、一意でないインデックスを使った場合は異なる挙動になりますが、ここでは簡単のためにレコードロックのみを考えることにします。
+          :::
+        </p>
+      </section>
+      <section class="level2" aria-labelledby="ロックを取得してみる">
+        <h2 id="ロックを取得してみる">ロックを取得してみる</h2>
+        <p>それでは、実際に排他ロックと共有ロックを取得してみます。</p>
+        <p>まずは排他ロックを取得してみます。</p>
+        <pre class="language-sql"><code class="language-sql">mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">1</span> <span class="token operator">|</span>    <span class="token number">30</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span></code></pre>
+        <p>別のセッションで、同じレコードに対して排他ロックの取得を試してみます。</p>
+        <pre class="language-sql"><code class="language-sql">mysql<span class="token punctuation">(</span>T2<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>T2<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+</code></pre>
+        <p>すると、実行結果がすぐ返ってきません。このように、ロックが取得できない場合はロックが待機状態（解放待ち）になります。待機状態のロックは、<code>innodb_lock_wait_timeout</code>秒（デフォルトでは50秒）が経過すると取得に失敗します。</p>
+        <p>ロックを解放するために、T1のトランザクションを終了します。すると、T2のクエリの実行結果が表示され、ロックも取得できました。</p>
+        <pre class="language-sql"><code class="language-sql">mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">commit</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>T2<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">1</span> <span class="token operator">|</span>    <span class="token number">30</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">5.47</span> sec<span class="token punctuation">)</span></code></pre>
+        <p>次は共有ロックです。共有ロックは、複数のトランザクションから取得できます。</p>
+        <pre class="language-sql"><code class="language-sql">mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">share</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">1</span> <span class="token operator">|</span>    <span class="token number">30</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>T2<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.01</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>T2<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">share</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">1</span> <span class="token operator">|</span>    <span class="token number">30</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span></code></pre>
+        <p>ロックの取得状態は<code>performance_schema.data_locks</code>テーブルで確認できます。<code>S, REC_NOT_GAP</code>となっているのがレコードの共有ロックです。</p>
+        <pre class="language-sql"><code class="language-sql">mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> THREAD_ID <span class="token punctuation">,</span>OBJECT_NAME<span class="token punctuation">,</span> INDEX_NAME<span class="token punctuation">,</span> LOCK_TYPE<span class="token punctuation">,</span> LOCK_MODE<span class="token punctuation">,</span> LOCK_STATUS<span class="token punctuation">,</span> LOCK_DATA <span class="token keyword">from</span> performance_schema<span class="token punctuation">.</span>data_locks<span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">-----------+-------------+------------+-----------+---------------+-------------+-----------+</span>
+<span class="token operator">|</span> THREAD_ID <span class="token operator">|</span> OBJECT_NAME <span class="token operator">|</span> INDEX_NAME <span class="token operator">|</span> LOCK_TYPE <span class="token operator">|</span> LOCK_MODE     <span class="token operator">|</span> LOCK_STATUS <span class="token operator">|</span> LOCK_DATA <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">-----------+-------------+------------+-----------+---------------+-------------+-----------+</span>
+<span class="token operator">|</span>        <span class="token number">48</span> <span class="token operator">|</span> numbers     <span class="token operator">|</span> <span class="token boolean">NULL</span>       <span class="token operator">|</span> <span class="token keyword">TABLE</span>     <span class="token operator">|</span> <span class="token operator">IS</span>            <span class="token operator">|</span> GRANTED     <span class="token operator">|</span> <span class="token boolean">NULL</span>      <span class="token operator">|</span>
+<span class="token operator">|</span>        <span class="token number">48</span> <span class="token operator">|</span> numbers     <span class="token operator">|</span> <span class="token keyword">PRIMARY</span>    <span class="token operator">|</span> RECORD    <span class="token operator">|</span> S<span class="token punctuation">,</span>REC_NOT_GAP <span class="token operator">|</span> GRANTED     <span class="token operator">|</span> <span class="token number">1</span>         <span class="token operator">|</span>
+<span class="token operator">|</span>        <span class="token number">50</span> <span class="token operator">|</span> numbers     <span class="token operator">|</span> <span class="token boolean">NULL</span>       <span class="token operator">|</span> <span class="token keyword">TABLE</span>     <span class="token operator">|</span> <span class="token operator">IS</span>            <span class="token operator">|</span> GRANTED     <span class="token operator">|</span> <span class="token boolean">NULL</span>      <span class="token operator">|</span>
+<span class="token operator">|</span>        <span class="token number">50</span> <span class="token operator">|</span> numbers     <span class="token operator">|</span> <span class="token keyword">PRIMARY</span>    <span class="token operator">|</span> RECORD    <span class="token operator">|</span> S<span class="token punctuation">,</span>REC_NOT_GAP <span class="token operator">|</span> GRANTED     <span class="token operator">|</span> <span class="token number">1</span>         <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">-----------+-------------+------------+-----------+---------------+-------------+-----------+</span>
+<span class="token number">4</span> <span class="token keyword">rows</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span></code></pre>
+        <p>カラムの詳細については、<a href="https://gihyo.jp/dev/serial/01/mysql-road-construction-news/0145">InnoDBの行ロック状態を確認する［その1］ | gihyo.jp</a>などを参照してみて下さい。</p>
+      </section>
+      <section class="level2" aria-labelledby="ここまでの整理">
+        <h2 id="ここまでの整理">ここまでの整理</h2>
+        <p>ここまでの内容を、Q &#x26; A形式で整理してみます。</p>
+      </section>
+    </section>
+    <section class="level1" aria-labelledby="最初の問題をロックで解決する">
+      <h1 id="最初の問題をロックで解決する">最初の問題をロックで解決する</h1>
+      <p>それでは、最初の振込の問題をロックを使って解決してみましょう。どのような問題だったかというと、口座A→口座Bへの入金と、口座C→口座Bへの入金が同じタイミングで起こり、口座Bの入金金額がおかしくなってしまうという問題です。</p>
+      <p>解決するためには、入金処理を開始するときに2つの口座の排他ロックを取得すればよいです（<code>{}</code>はプレースホルダを表すこととします）。</p>
+      <pre class="language-sql"><code class="language-sql"><span class="token keyword">begin</span><span class="token punctuation">;</span>
+<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> accounts <span class="token keyword">where</span> id <span class="token operator">=</span> {id_from} <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> accounts <span class="token keyword">where</span> id <span class="token operator">=</span> {id_to} <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+<span class="token keyword">update</span> accounts <span class="token keyword">set</span> balance <span class="token operator">=</span> balance <span class="token operator">-</span> {amount} <span class="token keyword">where</span> id <span class="token operator">=</span> {id_from}<span class="token punctuation">;</span>
+<span class="token keyword">update</span> accounts <span class="token keyword">set</span> balance <span class="token operator">=</span> balance <span class="token operator">+</span> {amount} <span class="token keyword">where</span> id <span class="token operator">=</span> {id_to}<span class="token punctuation">;</span>
+<span class="token keyword">commit</span><span class="token punctuation">;</span></code></pre>
+      <p>こうすることで、同じ口座に関する処理は順番に行われるため、口座Bの金額がおかしくなることを防げます（赤線がBの更新処理で、順番に行われていることがわかります）。</p>
+      <figure>
+        <img src="https://i.gyazo.com/4f51b5891a7afcbe9b875fb5aa97dc5a.png" alt="ロックで解決">
+        <figcaption aria-hidden="true">ロックで解決</figcaption>
+      </figure>
+    </section>
+    <section class="level1" aria-labelledby="デッドロックとは何か">
+      <h1 id="デッドロックとは何か">デッドロックとは何か</h1>
+      <p>ロックを使うことでデータを正しく更新できるようになりました。しかし、ロックはまた別の問題を引き起こす可能性があります。それはデッドロックです。</p>
+      <p>デッドロックとは、複数のトランザクションが互いに相手が所有するロックが解放されるのを待機して、処理が進まなくなってしまうことをいいます。</p>
+      <p>定義から分かるように、デッドロックは共有ロックだけを使う場合は起きません（共有ロックだけではロックの待機が起こらないため）。つまり、共有ロック・排他ロックが両方使われる場合と、排他ロックが複数使われる場合に発生します。</p>
+      <p>少々無理やりになってしまいますが、以下の単純なテーブルを使ってデッドロックを発生させてみます。</p>
+      <pre class="language-sql"><code class="language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> numbers <span class="token punctuation">(</span>
+  id <span class="token keyword">INT</span> <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+  <span class="token keyword">value</span> <span class="token keyword">INT</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span></code></pre>
+      <section class="level2" aria-labelledby="共有ロックと排他ロックによるデッドロック変換デッドロック">
+        <h2 id="共有ロックと排他ロックによるデッドロック変換デッドロック">共有ロックと排他ロックによるデッドロック（変換デッドロック）</h2>
+        <p>T1とT2でそれぞれ共有ロックを取得したあと、T1とT2の両方で排他ロックを取得しようとするとデッドロックになります。排他ロックを取得するときに、共有ロックの解放待ちになるためです。</p>
+        <figure>
+          <img src="https://i.gyazo.com/94b2e08b1d9289c56e80b735e1f75711.png" alt="共有ロックと排他ロックによるデッドロック">
+          <figcaption aria-hidden="true">共有ロックと排他ロックによるデッドロック</figcaption>
+        </figure>
+        <p>:::details 実行例</p>
+        <pre class="language-sql"><code class="language-sql">mysql<span class="token punctuation">(</span>A<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>A<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">share</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">1</span> <span class="token operator">|</span>    <span class="token number">30</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>B<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>B<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">share</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">1</span> <span class="token operator">|</span>    <span class="token number">30</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+<span class="token comment">-- ロック待ちになり、 相手がデッドロックがロールバックされてから実行される</span>
+mysql<span class="token punctuation">(</span>A<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">update</span> numbers <span class="token keyword">set</span> <span class="token keyword">value</span> <span class="token operator">=</span> <span class="token number">100</span> <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">1</span> <span class="token keyword">row</span> affected <span class="token punctuation">(</span><span class="token number">4.34</span> sec<span class="token punctuation">)</span>
+<span class="token keyword">Rows</span> <span class="token keyword">matched</span>: <span class="token number">1</span>  Changed: <span class="token number">1</span>  <span class="token keyword">Warnings</span>: <span class="token number">0</span>
+
+mysql<span class="token punctuation">(</span>B<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">update</span> numbers <span class="token keyword">set</span> <span class="token keyword">value</span> <span class="token operator">=</span> <span class="token number">100</span> <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+ERROR <span class="token number">1213</span> <span class="token punctuation">(</span><span class="token number">40001</span><span class="token punctuation">)</span>: Deadlock found <span class="token keyword">when</span> trying <span class="token keyword">to</span> get <span class="token keyword">lock</span><span class="token punctuation">;</span> try restarting <span class="token keyword">transaction</span></code></pre>
+        <p>:::</p>
+        <p>なお、共有ロックを取得している状態で排他ロックを取得しようとして起こるデッドロックを「変換デッドロック」と呼ぶようです。</p>
+      </section>
+      <section class="level2" aria-labelledby="複数の排他ロックによるデッドロックサイクルデッドロック">
+        <h2 id="複数の排他ロックによるデッドロックサイクルデッドロック">複数の排他ロックによるデッドロック（サイクルデッドロック）</h2>
+        <p>T1とT2でそれぞれ別のデータの排他ロックを取得したあと、相手側が持つデータの排他ロックを取得しようとするとデッドロックになります。</p>
+        <figure>
+          <img src="https://i.gyazo.com/835300c455f81372e39a1716cc1a7a6d.png" alt="複数の排他ロックによるデッドロック">
+          <figcaption aria-hidden="true">複数の排他ロックによるデッドロック</figcaption>
+        </figure>
+        <p>:::details 実行例</p>
+        <pre class="language-sql"><code class="language-sql">mysql<span class="token punctuation">(</span>A<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>B<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>A<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">1</span> <span class="token operator">|</span>    <span class="token number">30</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">0.02</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>B<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">2</span> <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">2</span> <span class="token operator">|</span>    <span class="token number">10</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>A<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">2</span> <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+<span class="token comment">-- ロック待ちになり、Bがデッドロックでロールバックされてから表示される</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span> id <span class="token operator">|</span> <span class="token keyword">value</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token operator">|</span>  <span class="token number">2</span> <span class="token operator">|</span>    <span class="token number">10</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----+-------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> <span class="token operator">in</span> <span class="token keyword">set</span> <span class="token punctuation">(</span><span class="token number">6.82</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>B<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> numbers <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+ERROR <span class="token number">1213</span> <span class="token punctuation">(</span><span class="token number">40001</span><span class="token punctuation">)</span>: Deadlock found <span class="token keyword">when</span> trying <span class="token keyword">to</span> get <span class="token keyword">lock</span><span class="token punctuation">;</span> try restarting <span class="token keyword">transaction</span></code></pre>
+        <p>:::</p>
+        <p>このようなデッドロックを、排他ロックの待機がサイクル状になるため「サイクルデッドロック」と呼びます。</p>
+      </section>
+    </section>
+    <section class="level1" aria-labelledby="デッドロックが起こらないようにするためには">
+      <h1 id="デッドロックが起こらないようにするためには">デッドロックが起こらないようにするためには</h1>
+      <p>デッドロックが起こる原因は、共有ロックを取得したデータを更新してしまうことや、トランザクションでの更新順序が一定でないことです。つまり、更新する場合は排他ロックを取得することと、トランザクションでの更新順序を一定にすることを守れば防げるはずです。</p>
+      <p>デッドロックの理解を深めるために、私が現在開発している在庫管理システムで遭遇しそうだった例を紹介します。</p>
+      <section class="level2" aria-labelledby="在庫管理システムでのデッドロック">
+        <h2 id="在庫管理システムでのデッドロック">在庫管理システムでのデッドロック</h2>
+        <p>商品には複数の在庫があり、在庫は現在の在庫数を持っています。在庫→商品への外部キーと、入荷→在庫への外部キーには、外部キー制約が設定されています。</p>
+        <p>:::details DDL</p>
+        <pre class="language-sql"><code class="language-sql"><span class="token comment">-- 商品</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> products <span class="token punctuation">(</span>
+  id <span class="token keyword">INT</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+  name <span class="token keyword">VARCHAR</span><span class="token punctuation">(</span><span class="token number">191</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- 在庫</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> inventories <span class="token punctuation">(</span>
+  id <span class="token keyword">INT</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+  product_id <span class="token keyword">INT</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+  current_quantity <span class="token keyword">INT</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+
+  <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>product_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> products<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">ON</span> <span class="token keyword">DELETE</span> <span class="token keyword">RESTRICT</span> <span class="token keyword">ON</span> <span class="token keyword">UPDATE</span> <span class="token keyword">CASCADE</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- 入荷</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> arrivals <span class="token punctuation">(</span>
+  id <span class="token keyword">INT</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+  inventory_id <span class="token keyword">INT</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+  quantity <span class="token keyword">INT</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span><span class="token punctuation">,</span>
+  arrived_at <span class="token keyword">DATETIME</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">DEFAULT</span> <span class="token keyword">CURRENT_TIMESTAMP</span><span class="token punctuation">,</span>
+
+  <span class="token keyword">FOREIGN</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span>inventory_id<span class="token punctuation">)</span> <span class="token keyword">REFERENCES</span> inventories<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token keyword">ON</span> <span class="token keyword">DELETE</span> <span class="token keyword">RESTRICT</span> <span class="token keyword">ON</span> <span class="token keyword">UPDATE</span> <span class="token keyword">CASCADE</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">insert</span> <span class="token keyword">into</span> products <span class="token punctuation">(</span>id<span class="token punctuation">,</span> name<span class="token punctuation">)</span> <span class="token keyword">values</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token string">'ハサミ'</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token string">'ノート'</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">,</span> <span class="token string">'ボールペン'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">insert</span> <span class="token keyword">into</span> inventories <span class="token punctuation">(</span>product_id<span class="token punctuation">,</span> current_quantity<span class="token punctuation">)</span> <span class="token keyword">values</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">30</span><span class="token punctuation">)</span><span class="token punctuation">;</span></code></pre>
+        <p>:::</p>
+        <p>入荷があるごとに入荷レコードを登録し、関連する在庫の在庫数を更新します。具体的には次のようなコードです。</p>
+        <pre class="language-sql"><code class="language-sql"><span class="token keyword">begin</span><span class="token punctuation">;</span>
+<span class="token keyword">insert</span> arrivals <span class="token punctuation">(</span>inventory_id<span class="token punctuation">,</span> quantity<span class="token punctuation">)</span> <span class="token keyword">values</span> <span class="token punctuation">(</span>{inventory_id}<span class="token punctuation">,</span> {quantity}<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">update</span> inventories <span class="token keyword">set</span> current_quantity <span class="token operator">=</span> current_quantity <span class="token operator">-</span> quantity<span class="token punctuation">;</span>
+<span class="token keyword">commit</span><span class="token punctuation">;</span></code></pre>
+        <p>UPDATE文で排他ロックがかけらるため、在庫数の更新は正しく行えます。しかし、これは同時に実行されたときにデッドロックが発生する可能性があります。実際に起こしてみましょう。</p>
+        <pre class="language-sql"><code class="language-sql"><span class="token comment">-- T1で入荷を登録</span>
+mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">insert</span> <span class="token keyword">into</span> arrivals <span class="token punctuation">(</span>inventory_id<span class="token punctuation">,</span> quantity<span class="token punctuation">)</span> <span class="token keyword">values</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">1</span> <span class="token keyword">row</span> affected <span class="token punctuation">(</span><span class="token number">0.04</span> sec<span class="token punctuation">)</span>
+
+<span class="token comment">-- T2で入荷を登録</span>
+mysql<span class="token punctuation">(</span>T2<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">begin</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">0</span> <span class="token keyword">rows</span> affected <span class="token punctuation">(</span><span class="token number">0.00</span> sec<span class="token punctuation">)</span>
+
+mysql<span class="token punctuation">(</span>T2<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">insert</span> <span class="token keyword">into</span> arrivals <span class="token punctuation">(</span>inventory_id<span class="token punctuation">,</span> quantity<span class="token punctuation">)</span> <span class="token keyword">values</span> <span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+Query OK<span class="token punctuation">,</span> <span class="token number">1</span> <span class="token keyword">row</span> affected <span class="token punctuation">(</span><span class="token number">0.02</span> sec<span class="token punctuation">)</span>
+
+<span class="token comment">--- T1で在庫を更新しようとすると、ロック待ちになる(???)</span>
+mysql<span class="token punctuation">(</span>T1<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">update</span> inventories <span class="token keyword">set</span> current_quantity <span class="token operator">=</span> current_quantity <span class="token operator">+</span> <span class="token number">10</span> <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+<span class="token comment">---T2でも在庫を更新すると、デッドロックになる</span>
+mysql<span class="token punctuation">(</span>T2<span class="token punctuation">)</span><span class="token operator">></span> <span class="token keyword">update</span> inventories <span class="token keyword">set</span> current_quantity <span class="token operator">=</span> current_quantity <span class="token operator">+</span> <span class="token number">20</span> <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+ERROR <span class="token number">1213</span> <span class="token punctuation">(</span><span class="token number">40001</span><span class="token punctuation">)</span>: Deadlock found <span class="token keyword">when</span> trying <span class="token keyword">to</span> get <span class="token keyword">lock</span><span class="token punctuation">;</span> try restarting <span class="token keyword">transaction</span></code></pre>
+        <p>一体なぜ、在庫の更新の部分でロック待ちになるのでしょうか？原因は、<strong>入荷にINSERTするときに、関連する在庫に外部キーによる共有ロックが設定されるから</strong>です。</p>
+        <p>デッドロックが発生したのは、共有ロックがかかったデータに、2つのトランザクションから排他ロックを取得しようとしたためです。つまり、変換デッドロックが発生しています。</p>
+        <p>外部キーによる共有ロックの取得については、MySQLのドキュメントに次のように書かれています。</p>
+        <blockquote>
+          <p>
+            FOREIGN KEY 制約がテーブル上で定義されている場合は、制約条件をチェックする必要がある挿入、更新、または削除が行われると、制約をチェックするために、参照されるレコード上に共有レコードレベルロックが設定されます。
+            <a href="https://dev.mysql.com/doc/refman/8.0/ja/innodb-locks-set.html">MySQL :: MySQL 8.0 リファレンスマニュアル :: 15.7.3 InnoDB のさまざまな SQL ステートメントで設定されたロック</a>
+          </p>
+        </blockquote>
+        <p>共有ロックは、「データを参照するので更新しないでねというロック」でした。そのため、子テーブルへのINSERTで親テーブルの関連レコードに共有ロックがかかるのは、外部キー制約の挙動としては妥当だと考えられます。</p>
+        <p>デッドロックの原因は、共有ロックを取得した在庫レコードを更新していることです。つまり、最初に更新のための排他ロックを取得すれば、デッドロックを防げます。</p>
+        <pre class="language-sql"><code class="language-sql"><span class="token keyword">begin</span><span class="token punctuation">;</span>
+<span class="token comment">-- 最初に排他ロックを取得する</span>
+<span class="token keyword">select</span> id <span class="token keyword">from</span> inventories <span class="token keyword">where</span> id <span class="token operator">=</span> {inventory_id} <span class="token keyword">for</span> <span class="token keyword">update</span><span class="token punctuation">;</span>
+<span class="token comment">-- 排他ロックを取得しているため、ここで共有ロックは取得されない</span>
+<span class="token keyword">insert</span> arrivals <span class="token punctuation">(</span>inventory_id<span class="token punctuation">,</span> quantity<span class="token punctuation">)</span> <span class="token keyword">values</span> <span class="token punctuation">(</span>{inventory_id}<span class="token punctuation">,</span> {quantity}<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">update</span> inventories <span class="token keyword">set</span> current_quantity <span class="token operator">=</span> current_quantity <span class="token operator">-</span> quantity<span class="token punctuation">;</span>
+<span class="token keyword">commit</span><span class="token punctuation">;</span></code></pre>
+      </section>
+      <section class="level2" aria-labelledby="その他のデッドロックの例">
+        <h2 id="その他のデッドロックの例">その他のデッドロックの例</h2>
+        <p>Zennの記事では、次の2つの記事が勉強になりました。どちらの例も、意図しない共有ロックの取得によって変換デッドロックが起きています。</p>
+        <p><a href="https://zenn.dev/tockn/articles/4268398c8ec9a9">https://zenn.dev/tockn/articles/4268398c8ec9a9</a></p>
+        <p><a href="https://zenn.dev/shuntagami/articles/ea44a20911b817">https://zenn.dev/shuntagami/articles/ea44a20911b817</a></p>
+        <p>デッドロックの対策として、「親レコードを排他ロックする」「再試行する」「デッドロックを許容する」「Redis Mutexを使う」「分離レベルを下げる」などの方法が紹介されています。</p>
+      </section>
+    </section>
+    <section class="level1" aria-labelledby="まとめ">
+      <h1 id="まとめ">まとめ</h1>
+      <ul>
+        <li>データを正しく更新するためのデータベースの仕組みには、トランザクションとロックがある</li>
+        <li>ロックは、あるデータに対する更新処理を制御するための仕組み</li>
+        <li>ロックには、データの更新を行うための排他ロックと、データを読み取っていることを示すための共有ロックがある</li>
+        <li>ロックしようとしているデータが既にロックされている場合は、ロックの解放待ち（トランザクションの終了待ち）になる。ただし、共有ロックは複数取得できる。</li>
+        <li>レコードロックを取得する代表的な方法には、ロック読み取り（SELECT … FOR UPDATE、SELECT … FOR SHARE）と、UPDATE文・DELETE文がある。UPDATEやDELETEでは、レコードに排他ロックが設定される。</li>
+        <li>複数のトランザクションが互いに終了待ちになることをデッドロックという。デッドロックが発生すると、片方のトランザクションがロールバックで強制終了される。</li>
+        <li>デッドロックの原因には、データの更新を行うのに共有ロックを取得していること（変換デッドロック）や、データを更新する順序が一定でないこと（サイクルデッドロック）がある。</li>
+      </ul>
+    </section>
+    <section class="level1" aria-labelledby="参考">
+      <h1 id="参考">参考</h1>
+      <ul>
+        <li><a href="https://fintan.jp/wp-content/uploads/2022/03/Database-Exclusion-Control.pdf">Database-Exclusion-Control.pdf</a></li>
+      </ul>
+    </section>
+  </body>
+</html>

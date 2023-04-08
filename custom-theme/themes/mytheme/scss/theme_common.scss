@@ -1,5 +1,113 @@
+@import "https://cdnjs.cloudflare.com/ajax/libs/prism/1.28.0/themes/prism.min.css";
+
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+}
+
+@page {
+  size: 148mm 210mm;
+}
+
+html {
+  font-size: 10pt;
+}
+
+@page :first {
+  counter-reset: chapter;
+}
+
+@page :nth(1) {
+  counter-increment: chapter;
+}
+
+body {
+  counter-reset: section subsection figure;
+}
+
+section > {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    padding: 0;
+    font-weight: bold;
+    break-after: avoid;
+  }
+
+  h1 {
+    margin: 10pt auto 5pt;
+    font-size: 14pt;
+    line-height: 1.5;
+
+    counter-increment: section;
+    counter-reset: subsection;
+
+    &:before {
+      margin-right: 1rem;
+      content: counter(chapter) "." counter(section);
+    }
+  }
+
+  h2 {
+    margin: 8pt auto 4pt;
+    font-size: 12pt;
+
+    counter-increment: subsection;
+
+    &:before {
+      margin-right: 1rem;
+      content: counter(chapter) "." counter(section) "." counter(subsection);
+    }
+  }
+
+  ul {
+    margin-left: 1em;
+  }
+
+  p {
+    text-indent: 1em;
+  }
+}
+
+ol {
+  margin-left: 1em;
+}
+
+@page {
+  @bottom-center {
+    content: counter(page);
+  }
+}
+
+@page :left {
+  @top-left {
+    content: env(doc-title);
+  }
+}
+
+body > section {
+  margin: 10px auto;
+}
+
+// シンタックスハイライト
+
+code {
+  background-color: #f6f6f6;
+  padding: 0 3pt;
+}
+
+figure[class^="language-"] {
+  margin: 0.5em 0;
+
+  figcaption {
+    background-color: #e6e6e6;
+  }
+
+  pre {
+    margin: 0pt;
+  }
 }

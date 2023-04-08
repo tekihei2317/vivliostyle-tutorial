@@ -1,0 +1,28 @@
+{
+  "@context": [
+    "https://schema.org",
+    "https://www.w3.org/ns/pub-context"
+  ],
+  "type": "Book",
+  "conformsTo": "https://github.com/vivliostyle/vivliostyle-cli",
+  "author": "山田太郎 <yamadataro@example.com>",
+  "inLanguage": "ja",
+  "dateModified": "2023-04-08T11:00:22.672Z",
+  "name": "mybook",
+  "readingOrder": [
+    {
+      "url": "maegaki.html",
+      "name": "まえがき"
+    },
+    {
+      "url": "honbun.html",
+      "name": "本文"
+    },
+    {
+      "url": "atogaki.html",
+      "name": "あとがき"
+    }
+  ],
+  "resources": [],
+  "links": []
+}
